@@ -1,0 +1,37 @@
+# NEXVION — Docker build context allowlist
+#
+# Strategy: exclude EVERYTHING first, then re-include only the NEXVION
+# application source and our own build/runtime assets.
+#
+# Why an allowlist instead of a denylist: this repo will accumulate Terraform,
+# Helm, Ansible, monitoring, docs and CI directories over the course of the
+# capstone. A denylist has to be edited every time one is added, and a forgotten
+# entry silently ships your IaC into the runtime layer. An allowlist fails closed.
+#
+# Pattern precedence is last-match-wins (same as .gitignore), which is why the
+# exclusions come first and the re-inclusions after.
+
+*
+
+# ---------------------------------------------------------------------------
+# NEXVION application source — these 9 files are provided and must never change
+# ---------------------------------------------------------------------------
+!index.html
+!products.html
+!payment.html
+!script.js
+!payment.js
+!style.css
+!products.css
+!payment.css
+!logo.png
+
+# ---------------------------------------------------------------------------
+# Build-stage tooling + runtime web-server configuration
+# ---------------------------------------------------------------------------
+!docker
+!docker/**
+
+# NOTE: Dockerfile and .dockerignore are always sent to the daemon by `docker
+# build` and cannot be excluded, so they are not listed above. They are never
+# COPYed into a stage, so they never reach the final image.

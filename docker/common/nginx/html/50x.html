@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex">
+  <title>Temporarily unavailable — NEXVION</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 22px;
+      padding: 40px 24px;
+      text-align: center;
+      font-family: "DM Sans", system-ui, -apple-system, sans-serif;
+      color: #111;
+      background: #fafaf8;
+    }
+    .brand img { height: 46px; width: auto; display: block; margin: 0 auto; }
+    .code {
+      font-family: "Playfair Display", Georgia, serif;
+      font-size: clamp(72px, 18vw, 132px);
+      line-height: 1;
+      letter-spacing: -3px;
+      color: #111;
+    }
+    h1 {
+      font-family: "Playfair Display", Georgia, serif;
+      font-size: clamp(20px, 4vw, 28px);
+      font-weight: 600;
+    }
+    p { max-width: 48ch; font-size: 14px; line-height: 1.65; color: #666; }
+    .actions { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; margin-top: 6px; }
+    .button {
+      display: inline-block;
+      padding: 13px 28px;
+      border: 1px solid #111;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      text-decoration: none;
+      color: #111;
+      background: transparent;
+      transition: background 0.2s ease, color 0.2s ease;
+    }
+    .button-dark { background: #111; color: #fff; }
+    .button-dark:hover { background: #333; }
+    footer { font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: #999; }
+  </style>
+</head>
+<body>
+  <a href="/" class="brand" aria-label="NEXVION Home">
+    <img src="/logo.png" alt="NEXVION">
+  </a>
+
+  <div class="code">503</div>
+  <h1>We're temporarily unavailable.</h1>
+  <p>
+    This service is being redeployed or restarted. Please try again in a few
+    moments — your basket and account are stored in your browser and will be
+    exactly where you left them.
+  </p>
+
+  <div class="actions">
+    <a href="/" class="button button-dark">Back to home</a>
+  </div>
+
+  <footer>NEXVION &mdash; Modern Essentials</footer>
+</body>
+</html>
