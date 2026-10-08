@@ -1,0 +1,47 @@
+# =============================================================================
+# NEXVION — development / demo environment
+# =============================================================================
+# Cheapest configuration that still exercises every feature.
+#
+# Applied with:  helm upgrade --install nexvion ./helm/nexvion -n nexvion \
+#                 -f helm/nexvion/values-dev.yaml
+#
+# Overriding values files rather than editing values.yaml is what keeps the same
+# chart usable across environments. values.yaml holds only shared defaults.
+
+# Two replicas is the floor for any PDB-protected service: with one replica the
+# PDB would block every voluntary eviction.
+#
+# autoscaling stays enabled in dev so the HPA manifests and is visibly working
+# during a demo. The ceiling is the same as everywhere else, because cost is
+# bounded by maxReplicas either way, and a demo where the replica count moves
+# is far more convincing than a static one.
+services:
+  storefront:
+    replicas: 2
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 4
+  checkout:
+    replicas: 2
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 4
+  assets:
+    replicas: 2
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 4
+
+ingress:
+  # No host and no certificate in dev. The site is reachable on the ALB DNS
+  # name over plain HTTP, which is enough for a demo and avoids waiting on ACM
+  # DNS validation. Set these via --set in prod.
+  enabled: true
+  className: alb
+  host: ""
+  certificateArn: ""
+  sslRedirect: false

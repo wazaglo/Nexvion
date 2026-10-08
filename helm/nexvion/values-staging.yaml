@@ -1,0 +1,37 @@
+# =============================================================================
+# NEXVION — staging
+# =============================================================================
+# A reduced version of production: same shape, smaller numbers.
+# Its purpose is to prove a change works before it reaches prod.
+
+services:
+  storefront:
+    replicas: 2
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 3
+  checkout:
+    replicas: 2
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 3
+  assets:
+    replicas: 2
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 3
+
+ingress:
+  enabled: true
+  className: alb
+  sslRedirect: true
+  # Supply the staging hostname and its own certificate at install time:
+  #   --set ingress.host=staging.nexvion.yourdomain.com \
+  #   --set ingress.certificateArn=arn:aws:acm:us-east-1:ACCOUNT:certificate/ID
+  #
+  # A separate staging certificate rather than reusing prod's. Sharing one means
+  # renewing it for staging also rotates prod, which is how staging takes
+  # production down.

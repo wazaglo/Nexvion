@@ -1,0 +1,81 @@
+{{- /*
+NEXVION :: helm test
+
+Runs on `helm test`, after install/upgrade.
+
+Two things the default scaffolded test got wrong here:
+
+1. It ran in the release namespace with no namespace selector, and it had no
+   toleration for the Fargate compute-type taint. On this cluster it would have
+   sat Pending forever and the test would hang rather than fail.
+2. It used a bare `busybox` container with no security context, which the
+   namespace's Restricted Pod Security Standard rejects outright.
+
+Instead this tests the thing that actually matters: that all three Services
+resolve and each returns HTTP 200 on its own health endpoint. That covers the
+Ingress path routing indirectly, because each Service is only reachable through
+the ALB once the Ingress exists.
+*/ -}}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ include "nexvion.fullname" . }}-test-health"
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "nexvion.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  serviceAccountName: {{ include "nexvion.serviceAccountName" . }}
+  automountServiceAccountToken: {{ .Values.serviceAccount.automount }}
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: {{ .Values.podSecurityContext.runAsUser }}
+    runAsGroup: {{ .Values.podSecurityContext.runAsGroup }}
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: health
+      image: public.ecr.aws/amazonlinux/amazonlinux:2023
+      command:
+        - /bin/sh
+        - -c
+        - |
+          set -u
+          failed=0
+          {{- range $svcName, $cfg := .Values.services }}
+          {{- if $cfg.enabled }}
+          printf 'nexvion/{{ $svcName }}: '
+          if wget --quiet --tries=2 --timeout=5 \
+               -O /dev/null "http://{{ include "nexvion.svcName" (dict "root" $ "svc" $svcName) }}:{{ $.Values.service.port }}/healthz"; then
+            echo 'HTTP 200  OK'
+          else
+            echo 'UNREACHABLE  FAIL'
+            failed=1
+          fi
+          {{- end }}
+          {{- end }}
+          exit $failed
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        privileged: false
+        capabilities:
+          drop:
+            - ALL
+      resources:
+        requests:
+          cpu: 25m
+          memory: 32Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi
+      volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+  volumes:
+    - name: tmp
+      emptyDir:
+        sizeLimit: 16Mi

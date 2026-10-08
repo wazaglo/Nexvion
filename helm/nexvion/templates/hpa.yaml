@@ -1,0 +1,69 @@
+{{- /*
+NEXVION :: HorizontalPodAutoscaler
+
+One HPA per service, targeted at that service's Deployment.
+
+Fargate notes, both real:
+  * CPU signals on Fargate are much smoother than on EC2, because a pod gets a
+    dedicated micro-VM sized to its request rather than sharing a node's cores.
+    Expect the replica count to move less dramatically, not to fail.
+  * Autoscaling UP costs more money, not less. HPA buys resilience, not
+    savings. maxReplicas is capped deliberately.
+
+Depends on metrics-server. Without it the HPA reports
+"no metrics available from metrics-server" and holds replicas at minReplicas.
+*/ -}}
+{{- $root := . -}}
+{{- range $svcName, $cfg := .Values.services }}
+{{- if and $cfg.enabled $cfg.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "nexvion.svcName" (dict "root" $root "svc" $svcName) }}
+  namespace: {{ $root.Values.namespace }}
+  labels:
+    {{- include "nexvion.svcLabels" (dict "root" $root "svc" $svcName) | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "nexvion.svcName" (dict "root" $root "svc" $svcName) }}
+  minReplicas: {{ $cfg.autoscaling.minReplicas }}
+  maxReplicas: {{ $cfg.autoscaling.maxReplicas }}
+  metrics:
+    {{- if $cfg.autoscaling.targetCPUUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ $cfg.autoscaling.targetCPUUtilizationPercentage }}
+    {{- end }}
+    {{- if $cfg.autoscaling.targetMemoryUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ $cfg.autoscaling.targetMemoryUtilizationPercentage }}
+    {{- end }}
+  behavior:
+    scaleUp:
+      # React fast. An HPA's default stabilisation window is 5 minutes, which is
+      # too slow to absorb a genuine traffic spike.
+      stabilizationWindowSeconds: 30
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+    scaleDown:
+      # Scale back slowly. Removing pods aggressively after a brief spike causes
+      # flapping, and on Fargate each scale-down also destroys a micro-VM.
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+{{- end }}
+{{- end }}

@@ -1,0 +1,49 @@
+# =============================================================================
+# NEXVION — production
+# =============================================================================
+# Applied with:
+#   helm upgrade --install nexvion ./helm/nexvion -n nexvion \
+#     -f helm/nexvion/values-prod.yaml \
+#     --set ingress.host=nexvion.yourdomain.com \
+#     --set ingress.certificateArn=arn:aws:acm:us-east-1:ACCOUNT:certificate/ID
+#
+# host and certificateArn are deliberately NOT set here. An ACM certificate must
+# live in the same region as the ALB, and the certificate ID is created per
+# environment. Hardcoding either would make the chart unportable and is a common
+# way to accidentally ship one environment's certificate to another.
+
+services:
+  storefront:
+    replicas: 3
+    autoscaling:
+      enabled: true
+      minReplicas: 3
+      maxReplicas: 6
+  checkout:
+    replicas: 3
+    autoscaling:
+      enabled: true
+      minReplicas: 3
+      maxReplicas: 4
+  assets:
+    replicas: 3
+    autoscaling:
+      enabled: true
+      minReplicas: 3
+      maxReplicas: 6
+
+ingress:
+  enabled: true
+  className: alb
+  # HTTP -> HTTPS 301 is only meaningful once a certificate is attached.
+  sslRedirect: true
+
+# PodDisruptionBudgets are enabled here and in dev, but in production
+# minAvailable should be replicas - 1 so a drain can always evict exactly one pod.
+# (Set per service in values.yaml as pdb.minAvailable.)
+
+# Note on NetworkPolicy: it does NOT enforce on EKS Fargate, because Fargate
+# pods do not run the VPC CNI and so have no policy engine. For L7 filtering at
+# the edge, attach an AWS WAF web ACL to the ALB instead and reference it here:
+#
+#   alb.ingress.kubernetes.io/wafv2-acl-arn: arn:aws:wafv2:us-east-1:ACCOUNT:regional/webacl/NAME/ID

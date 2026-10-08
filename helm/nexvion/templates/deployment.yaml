@@ -1,0 +1,89 @@
+{{- /*
+NEXVION :: Deployments (all three services)
+
+One file, three Deployments, rendered by ranging over .Values.services.
+
+Why range instead of three near-identical files: these three pods are genuinely
+identical apart from their image, and a copy-paste trio would drift. Three copies
+of a securityContext means a fix to one is a fix to none of the others later.
+
+Every value below comes from values.yaml — no literals are hardcoded, which is
+what makes this chart reusable across environments.
+*/ -}}
+{{- $root := . -}}
+{{- range $svcName, $cfg := .Values.services }}
+{{- if $cfg.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "nexvion.svcName" (dict "root" $root "svc" $svcName) }}
+  namespace: {{ $root.Values.namespace }}
+  labels:
+    {{- include "nexvion.svcLabels" (dict "root" $root "svc" $svcName) | nindent 4 }}
+spec:
+  replicas: {{ $cfg.replicas }}
+  selector:
+    matchLabels:
+      {{- include "nexvion.svcSelectorLabels" (dict "root" $root "svc" $svcName) | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # never take capacity below desired while a rollout is in flight
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        {{- include "nexvion.svcSelectorLabels" (dict "root" $root "svc" $svcName) | nindent 8 }}
+      annotations:
+        # Roll the pods when the image digest changes. Without this, a digest
+        # bump alone would not restart anything — the pod spec is unchanged
+        # except for the image, and Kubernetes will not restart on that alone.
+        checksum/image: {{ printf "%s@%s" $cfg.image.repository $cfg.image.digest | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "nexvion.serviceAccountName" $root }}
+      automountServiceAccountToken: {{ $root.Values.serviceAccount.automount }}
+      securityContext:
+        {{- include "nexvion.podSecurityContext" (dict "root" $root) | nindent 8 }}
+      containers:
+        - name: {{ $svcName }}
+          # registry/repository@digest — see the helper for why a digest, not a tag
+          image: {{ include "nexvion.image" (dict "root" $root "cfg" $cfg) | quote }}
+          imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+          securityContext:
+            {{- include "nexvion.containerSecurityContext" (dict "root" $root) | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ $root.Values.service.port }}
+              protocol: TCP
+          # /healthz and /readyz are never access-logged, so probe traffic does
+          # not pollute request metrics or the ALB access log.
+          livenessProbe:
+            {{- include "nexvion.livenessProbe" (dict "root" $root) | nindent 12 }}
+          readinessProbe:
+            {{- include "nexvion.readinessProbe" (dict "root" $root) | nindent 12 }}
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 3
+            failureThreshold: 10
+          resources:
+            {{- toYaml $cfg.resources | nindent 12 }}
+          volumeMounts:
+            # The image runs as uid 101 on a read-only root filesystem, and nginx
+            # writes its pid file plus every temp path under /tmp. Without this
+            # volume the container starts and then immediately dies trying to
+            # create /tmp/nginx.pid.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ $root.Values.tmpVolume.sizeLimit }}
+      # Fargate has no nodes to spread across, so topologySpreadConstraints are
+      # unsupported here. Note that in the docs rather than silently omitting it.
+      terminationGracePeriodSeconds: 30
+{{- end }}
+{{- end }}

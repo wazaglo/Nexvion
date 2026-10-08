@@ -1,0 +1,32 @@
+{{- /*
+NEXVION :: PodDisruptionBudget
+
+A PDB tells Kubernetes it may evict only N pods of this service at a time. Without
+one, a node drain during a cluster upgrade can take every replica of a service
+down at once — the exact outage it is meant to prevent.
+
+minAvailable is 1, not the replica count, on purpose. Setting it equal to
+replicas would block all voluntary evictions and stall node upgrades forever.
+
+Relevant now: the AWS Load Balancer Controller rolls its own pods, and Fargate
+replaces task micro-VMs. A PDB keeps those voluntary disruptions from taking a
+whole service offline at once.
+*/ -}}
+{{- $root := . -}}
+{{- range $svcName, $cfg := .Values.services }}
+{{- if and $cfg.enabled $cfg.pdb.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "nexvion.svcName" (dict "root" $root "svc" $svcName) }}
+  namespace: {{ $root.Values.namespace }}
+  labels:
+    {{- include "nexvion.svcLabels" (dict "root" $root "svc" $svcName) | nindent 4 }}
+spec:
+  minAvailable: {{ $cfg.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "nexvion.svcSelectorLabels" (dict "root" $root "svc" $svcName) | nindent 6 }}
+{{- end }}
+{{- end }}

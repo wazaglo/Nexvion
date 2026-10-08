@@ -1,0 +1,170 @@
+# =============================================================================
+# NEXVION — Helm values
+# =============================================================================
+# Single chart, three services. One Ingress fronts all three so the application
+# keeps a single public origin; without that, the relative links in the provided
+# HTML (index.html <-> products.html <-> payment.html, plus logo.png) would break
+# and we would have to modify application code, which is out of scope.
+#
+# Every value referenced by a template is declared here. Nothing is hardcoded in
+# a template: that is what makes this chart reusable across environments.
+
+global:
+  imageRegistry: 195675606509.dkr.ecr.us-east-1.amazonaws.com
+  clusterName: nexvion-demo
+  region: us-east-1
+  # Only used to build a copy-pasteable ACM ARN in NOTES.txt.
+  accountId: "195675606509"
+
+# Hardcoded rather than left to the release namespace. This cluster is
+# Fargate-only, and pods only schedule if they land in a namespace covered by a
+# Fargate profile. fp-nexvion selects namespace=nexvion, so an accidental
+# install into `default` would leave every pod Pending forever with a taint
+# error. Being explicit removes the footgun.
+namespace: nexvion
+
+image:
+  # IfNotPresent rather than Always: images are pinned by digest, so there is
+  # never a newer image to pull, and Always would add an ECR round trip to every
+  # pod start.
+  pullPolicy: IfNotPresent
+
+# uid 101 is the `nginx` user baked into the images. Declaring it here rather
+# than hardcoding it in the template means every service can be verified against
+# a single value.
+podSecurityContext:
+  runAsUser: 101
+  runAsGroup: 101
+
+serviceAccount:
+  create: true
+  name: ""
+  # These pods make no Kubernetes API calls, so the API token is dead weight and
+  # a credential an attacker could use if they ever reached the container.
+  automount: false
+  annotations: {}
+
+# -----------------------------------------------------------------------------
+# Services
+# -----------------------------------------------------------------------------
+# Every image is referenced by SHA256 digest, never by tag. Tags are mutable by
+# definition and even an immutable-tag ECR repo can gain a new tag between
+# review and deploy. A digest makes the deployment byte-for-byte reproducible.
+#
+# requests are set to actual need, not to a comfortable guess. On Fargate the
+# request IS the bill: 50m/64Mi rounds up to the smallest possible task
+# (0.25 vCPU / 0.5 GB, ~$9/pod/month), whereas an over-generous 500m/512Mi would
+# provision a 1 vCPU / 2 GB task at ~$36/month — 4x the cost for a workload that
+# serves static files.
+services:
+  storefront:
+    enabled: true
+    image:
+      repository: nexvion-storefront
+      digest: sha256:89f82b01576c90a80e051d391cfadee200adc79f313ac0b3956c8c46c331a39e
+    replicas: 2
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 4
+      targetCPUUtilizationPercentage: 70
+    pdb:
+      enabled: true
+      minAvailable: 1
+
+  checkout:
+    enabled: true
+    image:
+      repository: nexvion-checkout
+      digest: sha256:115dbfecddbe8478ca7f37f2a6f5846ab51ce3d7a9ae87121907892a6454980e
+    replicas: 2
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 4
+      targetCPUUtilizationPercentage: 70
+    pdb:
+      enabled: true
+      minAvailable: 1
+
+  assets:
+    enabled: true
+    image:
+      repository: nexvion-assets
+      digest: sha256:b72514ba80309e546463744fbdd6cac180946ca156db68ceedb0a1d5d0d1b8fa
+    replicas: 2
+    resources:
+      requests:
+        cpu: 25m
+        memory: 32Mi
+      limits:
+        cpu: 100m
+        memory: 64Mi
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 4
+      targetCPUUtilizationPercentage: 70
+    pdb:
+      enabled: true
+      minAvailable: 1
+
+service:
+  port: 8080
+  targetPort: http
+  type: ClusterIP
+  annotations: {}
+
+# nginx needs a writable /tmp: the image declares runAsUser 101 with a read-only
+# root filesystem, and the container writes its PID file and all temp paths under
+# /tmp. Without this emptyDir the container cannot write its own pid file and
+# crashes at startup.
+tmpVolume:
+  sizeLimit: 16Mi
+
+# -----------------------------------------------------------------------------
+# Ingress
+# -----------------------------------------------------------------------------
+ingress:
+  enabled: true
+  className: alb
+  # Fill these in at install time with --set. An ACM certificate must live in
+  # the same region as the ALB (us-east-1).
+  host: ""
+  certificateArn: ""
+  annotations: {}
+  extraRules: []
+  # When enabled, the ALB redirects plain HTTP to HTTPS. Requires HTTPS be
+  # enabled, which certificateArn does.
+  sslRedirect: true
+
+# Gateway API is NOT used. The controller logs "Disabling ALBGatewayAPI:
+# missing required CRDs" because the Gateway CRDs are not installed, so any
+# HTTPRoute would be inert. Ingress is the supported path here.
+httpRoute:
+  enabled: false
+
+# -----------------------------------------------------------------------------
+# Observability
+# -----------------------------------------------------------------------------
+# The nginx access log is JSON on stdout by design, so shipping logs is a matter
+# of pointing the log collector at the container stream — no agent-side parsing.
+logLevel: info
+serviceMonitor:
+  enabled: false
+
+serviceMesh: {}

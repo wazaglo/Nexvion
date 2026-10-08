@@ -1,0 +1,38 @@
+{{- /*
+NEXVION :: Services (all three)
+
+ClusterIP only. The ALB reaches these pods through the Ingress, so a
+LoadBalancer-type Service here would create a second, redundant NLB.
+
+Selector uses the per-service component label, so each Service targets exactly
+one Deployment. Reusing the shared selectorLabels without the component label
+would make every Service select all three Deployments' pods at once.
+*/ -}}
+{{- $root := . -}}
+{{- range $svcName, $cfg := .Values.services }}
+{{- if $cfg.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "nexvion.svcName" (dict "root" $root "svc" $svcName) }}
+  namespace: {{ $root.Values.namespace }}
+  labels:
+    {{- include "nexvion.svcLabels" (dict "root" $root "svc" $svcName) | nindent 4 }}
+  {{- with $root.Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ $root.Values.service.type }}
+  ports:
+    - name: http
+      port: {{ $root.Values.service.port }}
+      # Named targetPort, not a number: it resolves to the container port named
+      # `http`, so changing the container port does not silently break routing.
+      targetPort: {{ $root.Values.service.targetPort }}
+      protocol: TCP
+  selector:
+    {{- include "nexvion.svcSelectorLabels" (dict "root" $root "svc" $svcName) | nindent 4 }}
+{{- end }}
+{{- end }}

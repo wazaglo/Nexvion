@@ -1,0 +1,124 @@
+{{- /*
+NEXVION :: Ingress
+
+ONE Ingress with THREE backends. This is the load-bearing decision of the whole
+deployment.
+
+The application is three static documents that link to each other with *relative*
+paths — index.html -> products.html -> payment.html, and all three reference
+logo.png. Those links only work if all of it is served from a single origin.
+
+The alternative (three Ingress objects on the same host) would make the ALB
+create three separate load balancers, each with its own origin. The pages would
+then cross origins and every relative link would break — which is why the app
+cannot simply be split without editing its HTML.
+
+Path routing keeps one hostname, one ALB, one origin, one certificate, and zero
+changes to the provided application source.
+
+  /payment.html   -> checkout    (the only page served by the checkout image)
+  /logo.png       -> assets      (referenced by all three pages)
+  /               -> storefront  (everything else, as the default)
+
+Note on path precedence: ALB evaluates longest-prefix first, so /payment.html
+wins over /. pathType is Exact where a single file must match exactly, and
+Prefix only where a subtree is genuinely intended.
+*/ -}}
+{{- if .Values.ingress.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "nexvion.fullname" . }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "nexvion.labels" . | nindent 4 }}
+  annotations:
+    {{- /*
+    internet-facing: the ALB needs a public DNS name for the ACM certificate
+    to validate and for shoppers to reach.
+    */}}
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    {{- /*
+    ip, not instance. Fargate pods have no node IP to register — this is the
+    single most common Fargate + ALB failure, and it surfaces as targets stuck
+    in "initializing" with no useful error.
+    */}}
+    alb.ingress.kubernetes.io/target-type: ip
+    {{- /*
+    Health check against /healthz rather than the ALB's default `/`, which
+    would 200 on any page and never notice a broken container.
+    */}}
+    alb.ingress.kubernetes.io/healthcheck-path: /healthz
+    alb.ingress.kubernetes.io/healthcheck-protocol: HTTP
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "10"
+    alb.ingress.kubernetes.io/healthcheck-timeout-seconds: "5"
+    alb.ingress.kubernetes.io/healthy-threshold: "2"
+    alb.ingress.kubernetes.io/unhealthy-threshold: "3"
+    {{- /*
+    Preserve the client IP so nginx logs a real remote_addr rather than the
+    ALB's internal address.
+    */}}
+    alb.ingress.kubernetes.io/target-group-attributes: preserve_client_ip.enabled=true
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS":443}]'
+    {{- if .Values.ingress.certificateArn }}
+    alb.ingress.kubernetes.io/certificate-arn: {{ .Values.ingress.certificateArn | quote }}
+    {{- end }}
+    {{- if and .Values.ingress.sslRedirect .Values.ingress.certificateArn }}
+    alb.ingress.kubernetes.io/actions.ssl-redirect: >-
+      [{"Type":"redirect","RedirectConfig":{"Protocol":"HTTPS","Port":"443","StatusCode":"HTTP_301"}}]
+    {{- end }}
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- if and .Values.ingress.certificateArn .Values.ingress.host }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host | quote }}
+      # AWS Load Balancer Controller reads the certificate straight from the ACM
+      # ARN above. secretName is required by the Ingress schema but is not read
+      # by this controller — there is no TLS secret in the cluster.
+      secretName: {{ printf "%s-tls" (include "nexvion.fullname" .) }}
+  {{- end }}
+  rules:
+    - {{ if .Values.ingress.host }}host: {{ .Values.ingress.host | quote }}
+      {{ end }}http:
+        paths:
+          {{- if .Values.services.checkout.enabled }}
+          # --- checkout: the payment page only ------------------------------
+          - path: /payment.html
+            pathType: Exact
+            backend:
+              service:
+                name: {{ include "nexvion.svcName" (dict "root" $ "svc" "checkout") }}
+                port:
+                  number: {{ .Values.service.port }}
+          {{- end }}
+          {{- if .Values.services.assets.enabled }}
+          # --- assets: the brand binary, referenced by all three pages ------
+          - path: /logo.png
+            pathType: Exact
+            backend:
+              service:
+                name: {{ include "nexvion.svcName" (dict "root" $ "svc" "assets") }}
+                port:
+                  number: {{ .Values.service.port }}
+          {{- end }}
+          {{- if .Values.services.storefront.enabled }}
+          # --- storefront: everything else, as the default ------------------
+          # style.css is served here too. All three pages reference style.css,
+          # but it only exists in the storefront image, so this path is load
+          # bearing for the checkout page as well as the storefront pages.
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "nexvion.svcName" (dict "root" $ "svc" "storefront") }}
+                port:
+                  number: {{ .Values.service.port }}
+          {{- end }}
+          {{- with .Values.ingress.extraRules }}
+          {{- toYaml . | nindent 10 }}
+          {{- end }}
+{{- end }}

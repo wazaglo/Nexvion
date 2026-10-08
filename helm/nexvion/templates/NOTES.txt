@@ -1,0 +1,64 @@
+NEXVION {{ .Chart.AppVersion }} has been deployed as release "{{ .Release.Name }}"
+into namespace {{ .Values.namespace }} on cluster {{ .Values.global.clusterName }}.
+
+SERVICES
+{{- range $svcName, $cfg := .Values.services }}
+{{- if $cfg.enabled }}
+  {{ include "nexvion.svcName" (dict "root" $ "svc" $svcName) }}
+    image:    {{ $cfg.image.repository }}@{{ $cfg.image.digest | trunc 20 }}...
+    replicas: {{ $cfg.replicas }}{{ if $cfg.autoscaling.enabled }} (autoscaling {{ $cfg.autoscaling.minReplicas }}-{{ $cfg.autoscaling.maxReplicas }} on CPU > {{ $cfg.autoscaling.targetCPUUtilizationPercentage }}%){{ end }}
+{{- end }}
+{{- end }}
+
+CHECK STATUS
+  kubectl -n {{ .Values.namespace }} get deploy,pods,svc
+  kubectl -n {{ .Values.namespace }} get ingress
+  kubectl get hpa,pdb -n {{ .Values.namespace }}
+
+FIND THE PUBLIC URL
+{{- if .Values.ingress.host }}
+  Once the ALB finishes provisioning (2-5 minutes), the site is at:
+    https://{{ .Values.ingress.host }}
+{{- else }}
+  ingress.host is not set. Create an ACM certificate in {{ .Values.global.region }}
+  (it MUST match the ALB's region), then reinstall:
+
+    helm upgrade {{ .Release.Name }} . \
+      --namespace {{ .Values.namespace }} \
+      --set ingress.host=nexvion.yourdomain.com \
+      --set ingress.certificateArn=arn:aws:acm:{{ .Values.global.region }}:{{ .Values.global.accountId }}:certificate/REPLACE_ME
+{{- end }}
+
+  The ALB DNS name is also directly reachable:
+    kubectl get ingress {{ include "nexvion.fullname" . }} -n {{ .Values.namespace }} \
+      -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+
+ROUTE MAP
+  /payment.html  ->  checkout
+  /logo.png      ->  assets
+  /              ->  storefront   (home, shop, and style.css)
+
+VERIFY THE HARDENING
+  Every pod runs as uid {{ .Values.podSecurityContext.runAsUser }} on a read-only
+  root filesystem with all capabilities dropped:
+
+    kubectl -n {{ .Values.namespace }} get deploy -o jsonpath='{.items[*].spec.template.spec.securityContext}'
+
+  All {{ len .Values.services }} services emit JSON access logs on stdout:
+
+    kubectl -n {{ .Values.namespace }} logs deploy/{{ include "nexvion.svcName" (dict "root" $ "svc" "storefront") }} --tail=5
+
+COST
+  Fargate bills the *request*, rounded up to the smallest available task
+  (0.25 vCPU / 0.5 GB, about $9/pod/month in {{ .Values.global.region }}).
+  At these requests, 3 services x 2 replicas is roughly $54/month; scaling to
+  4 replicas each would reach roughly $162/month.
+
+  Set a *daily* budget alarm rather than a monthly one. The fixed baseline
+  (EKS control plane + NAT gateway + add-on pods) is already about $145/month,
+  so a low monthly alarm would fire every single month and teach you to ignore it.
+
+{{ if not .Values.ingress.host }}
+WARNING: ingress.host is empty, so no public DNS name exists yet and the site
+is only reachable inside the cluster. Complete the ACM + Route 53 step above.
+{{ end }}
