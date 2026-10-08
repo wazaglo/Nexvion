@@ -276,6 +276,61 @@ Every image was built and exercised, not just written:
 
 ---
 
+## Pushing to Amazon ECR
+
+```bash
+ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+REGION=us-east-1
+aws ecr get-login-password --region $REGION \
+  | docker login --username AWS --password-stdin \
+      $ACCOUNT.dkr.ecr.$REGION.amazonaws.com
+
+docker build --provenance=false --platform linux/amd64 \
+  -f docker/storefront/Dockerfile -t nexvion-storefront:0.1.1 .
+docker push --platform linux/amd64 \
+  $ACCOUNT.dkr.ecr.$REGION.amazonaws.com/nexvion-storefront:0.1.1
+```
+
+### `--provenance=false` is required, not optional
+
+With Docker 29 on the containerd image store, a normal `docker build` embeds a
+BuildKit provenance attestation, and the pushed artifact is published as
+`application/vnd.oci.image.index.v1+json` — a multi-platform **index**, not a
+single manifest.
+
+ECR's basic scanner rejects that outright:
+
+```
+UnsupportedImageTypeException: An artifact with media type
+'application/vnd.oci.image.index.v1+json' cannot be scanned.
+```
+
+Worse, **scan-on-push fails silently** — the repository reports no findings and
+no error, which reads as "my image is clean" when in fact nothing was ever
+scanned. On a security-graded pipeline that is the dangerous failure mode.
+
+Adding `--provenance=false` yields a single `application/vnd.oci.image.manifest.v1+json`,
+which the scanner accepts. Confirm it landed:
+
+```bash
+aws ecr describe-images --repository-name nexvion-storefront \
+  --image-ids imageTag=0.1.1 --region $REGION \
+  --query 'imageDetails[0].imageManifestMediaType' --output text
+# application/vnd.oci.image.manifest.v1+json   <- good
+# application/vnd.oci.image.index.v1+json      <- unscannable
+```
+
+Because the repositories use immutable tags, changing the manifest format needs
+a new tag (`0.1.1`, not an overwrite of `0.1.0`).
+
+Note that the ECR basic scanner only inspects OS packages, not application
+dependencies, and the free tier allows a small number of scans per hour —
+results can take several minutes and `StartImageScan` returns
+`LimitExceededException` while a scan is already queued. **Trivy in CI is the
+real gate**; ECR scanning is defence in depth.
+
+---
+
 ## Known follow-ups
 
 1. **`style.css` is duplicated** into both `storefront` and `checkout`, because
