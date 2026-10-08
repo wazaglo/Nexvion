@@ -1,100 +1,146 @@
-# NEXVION — IAM policies
+# NEXVION — IAM roles
 
-Infrastructure-as-code for the IAM permissions this project needs. Committing
-policy documents is the point: a reviewer can read exactly what the application
-is permitted to do, without granting anyone console access to check.
+Reference notes for the IAM roles this project creates. The policy documents
+themselves are authored and maintained outside this repository; this file
+explains how each role is wired and why it is scoped the way it is, so a reviewer
+can follow the reasoning without needing console access.
 
 ---
 
-## `nexvion-albc-policy.json`
+## `nexvion-fargate-pod-exec`
 
-Attached to **`arn:aws:iam::195675606509:role/nexvion-albc`**, the AWS Load
-Balancer Controller's role.
+```
+arn:aws:iam::195675606509:role/nexvion-fargate-pod-exec
+```
 
-### Why customer-managed
+The **pod execution role** for both Fargate profiles (`fp-kube-system`,
+`fp-nexvion`). Fargate has no node instance, so the node role's usual duties have
+no home and must be replaced. This role fills the gap.
 
-The AWS-managed equivalent
-(`arn:aws:iam::aws:policy/service-role/AWSLoadBalancerControllerPolicy`) returns
-`NoSuchEntity` in this account and does not appear in the AWS managed-policy
-catalogue, so there was nothing to attach. Writing our own is the better outcome
-regardless: the permissions are auditable in git and reviewable in a pull request.
+### Trust
 
-### How it is bound
+```
+Principal: { "Service": "eks-fargate-pods.amazonaws.com" }
+Action:    sts:AssumeRole
+Condition: StringEquals { "aws:SourceAccount": "195675606509" }
+```
 
-Through IRSA (IAM Roles for Service Accounts). The trust policy on the role
-pins the OIDC subject:
+The service is `eks-fargate-pods.amazonaws.com`, **not** `eks.amazonaws.com`.
+The latter is the control plane's service principal; a trust policy using it is a
+common mistake and it fails silently — the profile is created, pods schedule,
+and then every pod dies in `ImagePullBackOff` because nothing can pull an image.
+
+`aws:SourceAccount` is a confused-deputy guard: only an EKS Fargate profile in
+this account can assume the role.
+
+### Permissions
+
+| Policy | Why |
+|---|---|
+| `AmazonEC2ContainerRegistryPullOnly` | Pulls the NEXVION images from our ECR repositories |
+| `CloudWatchAgentServerPolicy` | Ships container stdout to CloudWatch Logs |
+
+`PullOnly` rather than `ReadOnly` — the latter also grants `ListImages` and
+`DescribeImages`, which a workload never needs. No inline policies are attached,
+so every permission stays visible in these two managed policies.
+
+### Where it is referenced
+
+Selected when each Fargate profile is created. It is **not** referenced by the
+Helm chart, which is correct: pod execution roles are bound at profile creation,
+not per pod.
+
+---
+
+## `nexvion-albc`
+
+```
+arn:aws:iam::195675606509:role/nexvion-albc
+```
+
+The **AWS Load Balancer Controller's** role. The controller creates the ALB,
+target groups and listener rules from Ingress objects, so it needs ELB and EC2
+permissions plus permission to create the ELB service-linked role on first use.
+
+### Trust — IRSA with a pinned subject
 
 ```
 Principal: arn:aws:iam::195675606509:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/<CLUSTER_ID>
 Action:    sts:AssumeRoleWithWebIdentity
 Condition:
-  aud = sts.amazonaws.com
-  sub = system:serviceaccount:eks:aws-load-balancer-controller
+  <issuer>:aud = sts.amazonaws.com
+  <issuer>:sub = system:serviceaccount:eks:aws-load-balancer-controller
 ```
 
 The `sub` condition is the security-relevant part. Without it, **any** service
-account in the `eks` namespace could mint a token and assume a role that creates
-and modifies load balancers. With it, only the controller's own service account
-can. Same role, very different blast radius.
+account in the `kube-system` namespace could mint a token and assume a role that
+creates and modifies internet-facing load balancers. With it, only the
+controller's own service account can. Same role, very different blast radius.
 
-The service account itself is created by the Helm chart, annotated with:
+`<CLUSTER_ID>` must match the cluster's OIDC issuer exactly. Get it with:
 
-```yaml
-eks.amazonaws.com/role-arn: arn:aws:iam::195675606509:role/nexvion-albc
+```bash
+aws eks describe-cluster --name nexvion-demo --region us-east-1 \
+  --query 'cluster.identity.oidc.issuer' --output text
 ```
 
-### Scope
+Strip the `https://` for the `Federated` principal; keep it in the condition
+keys.
 
-| Area | Why |
-|---|---|
-| `elasticloadbalancing:*` create/delete/listener/rule/target-group | Creating and reconciling the ALB, target groups and listener rules from Ingress objects |
-| `elasticloadbalancing:AddTags` | Scoped by resource to `loadbalancer/*` only |
-| `ec2:Describe*` on subnets, SGs, VPCs, ENIs, instances | The controller discovers subnets and security groups by tag to place the ALB. These are all read-only |
-| `iam:CreateServiceLinkedRole` | One-time creation of the ELB service-linked role, gated on `iam:AWSServiceName == elasticloadbalancing.amazonaws.com` |
-| `wafv2:*` | Optional — required only if a WAF web ACL is attached to the ALB |
+### Service account binding
 
-The service-linked-role statement is deliberately conditioned. Unconditional
-`iam:CreateServiceLinkedRole` on `"Resource": "*"` is a recognised privilege-
-escalation vector; the condition means the role can only be created for the ELB
-service and nothing else.
+Created by the Helm chart, not by hand:
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aws-load-balancer-controller
+  namespace: kube-system
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::195675606509:role/nexvion-albc
+```
+
+Note the syntax for chart 3.6.0+. Older AWS documentation and most tutorials
+use `serviceAccount.iamRoleArn=arn:...`, which **does not exist in that chart**
+and silently produces a ServiceAccount with no IAM role at all.
+
+### OIDC provider registration — easy to miss
+
+IRSA is three parts, not two. Creating the role and annotating the ServiceAccount
+is necessary but **not sufficient**. The OIDC provider must also be registered on
+the cluster:
+
+```bash
+aws eks create-identity-provider-config --region us-east-1 \
+  --cluster-name nexvion-demo \
+  --name nexvion \
+  --oidc-issuer-url https://oidc.eks.us-east-1.amazonaws.com/id/<CLUSTER_ID>
+```
+
+Without it the API server will not issue a usable identity token, and every AWS
+call from the controller fails with:
+
+```
+InvalidIdentityToken: The web identity token provided could not be validated
+```
+
+The controller then retries indefinitely and the Ingress `ADDRESS` stays empty
+with **no ALB ever created**. The symptom points at IAM but not at the missing
+registration, which is what makes it expensive to debug.
 
 ---
 
-## Drift warning
+## Verifying a role can actually be assumed
 
-The policy in this directory currently has **16 statements / 86 actions**, while
-the policy live in IAM has **8 statements / 60 actions**.
-
-This file was **not** the one applied to AWS. The applied policy was authored
-separately and is narrower. The extra permissions in this file include things
-such as `wafv2` mutations that the running controller does not need.
-
-Before this file is treated as the source of truth, one of the following must
-happen:
-
-1. **Narrow the file** to match what is actually attached, or
-2. **Apply the file** with `aws iam put-role-policy` after reviewing the
-   additional 26 actions, or
-3. **Document it** as the intended future state, and keep the narrower live
-   policy until WAF is genuinely attached
-
-Applying it blindly would widen the controller's permissions without review.
-Least privilege means the committed document and the live policy should agree.
-
-### Verifying they match
+Rather than trusting that the trust policy *looks* right, ask STS directly. For
+IRSA this needs a real projected token, so the practical check is to look for the
+absence of `InvalidIdentityToken` in the controller's logs after restarting it:
 
 ```bash
-POLICY_ARN=arn:aws:iam::195675606509:policy/nexvion-albc-policy
-VERSION=$(aws iam get-policy --policy-arn $POLICY_ARN \
-  --query 'Policy.DefaultVersionId' --output text)
-
-aws iam get-policy-version --policy-arn $POLICY_ARN --version-id $VERSION \
-  --query 'PolicyVersion.Document' --output json > /tmp/live.json
-
-# compare statement counts first — the cheapest useful signal
-jq '.Statement | length' /tmp/live.json iam/nexvion-albc-policy.json
+kubectl -n kube-system rollout restart deploy/aws-load-balancer-controller
+kubectl -n kube-system logs -l app.kubernetes.io/name=aws-load-balancer-controller \
+  --tail=50 | grep -i 'InvalidIdentityToken\|Forbidden'
 ```
 
-Compare statements before comparing the document: statement count catches almost
-all real drift immediately, and a full document diff is noisy because IAM
-re-serialises the JSON with different key order and whitespace.
+An empty result means IRSA is working.

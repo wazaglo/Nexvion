@@ -55,11 +55,20 @@ metadata:
     alb.ingress.kubernetes.io/healthy-threshold: "2"
     alb.ingress.kubernetes.io/unhealthy-threshold: "3"
     {{- /*
-    Preserve the client IP so nginx logs a real remote_addr rather than the
-    ALB's internal address.
+    preserve_client_ip is deliberately NOT set unconditionally.
+
+    AWS rejects it on plain-HTTP target groups with:
+      InvalidConfigurationRequest: A target group with HTTP protocol does not
+      support the attribute preserve_client_ip.enabled
+
+    Setting it unconditionally therefore breaks every deployment that has no ACM
+    certificate — which is the dev path, and the first thing anyone tries. It is
+    only valid once the listener is HTTPS, so it is gated on the certificate.
     */}}
+    {{- if .Values.ingress.certificateArn }}
     alb.ingress.kubernetes.io/target-group-attributes: preserve_client_ip.enabled=true
-    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS":443}]'
+    {{- end }}
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80{{ if .Values.ingress.certificateArn }}, {"HTTPS":443}{{ end }}}]'
     {{- if .Values.ingress.certificateArn }}
     alb.ingress.kubernetes.io/certificate-arn: {{ .Values.ingress.certificateArn | quote }}
     {{- end }}
